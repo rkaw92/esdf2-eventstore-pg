@@ -1,0 +1,33 @@
+{
+  "name": "esdf2-eventstore-pg",
+  "version": "0.1.0",
+  "description": "PostgreSQL-based Event Store implementation for esdf2",
+  "main": "dist/index.js",
+  "scripts": {
+    "test": "mocha -r ts-node/register src/test/test.ts",
+    "prepare": "tsc"
+  },
+  "keywords": [
+    "esdf",
+    "event",
+    "sourcing",
+    "event",
+    "store"
+  ],
+  "author": "Robert Kawecki <robert+public@rkaw.pl>",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/mocha": "^8.2.1",
+    "@types/node": "^14.14.31",
+    "@types/pg": "^7.14.11",
+    "@types/uuid": "^8.3.0",
+    "mocha": "^8.3.1",
+    "ts-node": "^9.1.1",
+    "typescript": "^4.2.3"
+  },
+  "dependencies": {
+    "esdf2-interfaces": "^0.2.2",
+    "pg": "^8.5.1",
+    "uuid": "^8.3.2"
+  }
+}
