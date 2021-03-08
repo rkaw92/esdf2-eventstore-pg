@@ -40,6 +40,11 @@ const publisher = async function(events: QualifiedDomainEvent[]) {
     await store.save(commit);
     await store.publishSequence(commit.location, publisher);
     await store.publishOutstanding(publisher);
+
+    await store.load({ sequence: commit.location.sequence, slot: 0 }, function(event) {
+        console.log('loaded:', event);
+    });
+
     // Teardown:
     await pool.end();
 })();

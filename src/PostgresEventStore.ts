@@ -1,4 +1,4 @@
-import { Commit, CommitLocation, QualifiedDomainEvent } from "esdf2-interfaces";
+import { Commit, CommitLocation, EventLocation, QualifiedDomainEvent } from "esdf2-interfaces";
 import { Connection, Pool, PoolClient } from "pg";
 
 export type IsolationLevel = "READ COMMITTED" | "REPEATABLE READ" | "SERIALIZABLE";
@@ -37,8 +37,14 @@ function outboxRowToLocation(row: OutboxRow): CommitLocation {
 
 export class PostgresEventStore {
     private pool: Pool;
-    constructor(pool: Pool) {
+    private loadBatchSize: number;
+    constructor(pool: Pool, {
+        loadBatchSize = 100
+    }: {
+        loadBatchSize?: number
+    } = {}) {
         this.pool = pool;
+        this.loadBatchSize = loadBatchSize;
     }
     private async transaction<ResolvedType>(level: IsolationLevel, workFunction: (conn: PoolClient) => Promise<ResolvedType>) {
         const connection = await this.pool.connect();
@@ -73,6 +79,38 @@ export class PostgresEventStore {
                 commit.location.sequence,
                 commit.location.slot
             ]);
+        });
+    }
+
+    async load(since: CommitLocation, processorFunction: (event: QualifiedDomainEvent) => void): Promise<{ lastCommit?: CommitLocation, lastEvent?: EventLocation }> {
+        const loadBatchSize = this.loadBatchSize;
+        return await this.transaction('READ COMMITTED', async function(client) {
+            let slot: number = since.slot;
+            let lastCommit: CommitLocation | undefined;
+            let lastEvent: EventLocation | undefined;
+            let processedEventCount: number;
+            do {
+                const eventRows = (await client.query<EventRow>('SELECT type, payload, id, sequence, slot, index FROM eventstore.events WHERE "sequence" = $1 AND "slot" > $2 ORDER BY index LIMIT $3', [
+                    since.sequence,
+                    slot,
+                    loadBatchSize
+                ])).rows;
+                for (let eventRow of eventRows) {
+                    const event = rowToEvent(eventRow);
+                    processorFunction(event);
+                    slot = Number(eventRow.slot);
+                    lastEvent = event.location;
+                    lastCommit = {
+                        sequence: event.location.sequence,
+                        slot: slot
+                    };
+                }
+                processedEventCount = eventRows.length;
+            } while (processedEventCount === loadBatchSize);
+            return {
+                lastCommit,
+                lastEvent
+            };
         });
     }
     private async doPublish(client: PoolClient, location: CommitLocation, publisher: (events: QualifiedDomainEvent[]) => Promise<void>): Promise<void> {
