@@ -100,7 +100,7 @@ export class PostgresEventStore {
             last.slot
         ]);
     }
-    private async doFindUnpublished(client: PoolClient, minAgeSeconds: number, limit: number): Promise<CommitLocation[]> {
+    private async doFindOutstanding(client: PoolClient, minAgeSeconds: number, limit: number): Promise<CommitLocation[]> {
         const intervalString = `${minAgeSeconds} SECOND`;
         const outboxRows = (await client.query<OutboxRow>('SELECT sequence, slot FROM eventstore.outbox WHERE committed_at < (NOW() - $1::interval) LIMIT $2 FOR SHARE SKIP LOCKED', [
             intervalString,
@@ -109,13 +109,13 @@ export class PostgresEventStore {
         return outboxRows.map(outboxRowToLocation);
     }
 
-    public async publishUpTo(location: CommitLocation, publisher: (events: QualifiedDomainEvent[]) => Promise<void>) {
+    public async publishSequence(location: CommitLocation, publisher: (events: QualifiedDomainEvent[]) => Promise<void>) {
         return this.transaction('READ COMMITTED', (client) => this.doPublish(client, location, publisher));
     }
 
-    public async publishUnpublished(publisher: (events: QualifiedDomainEvent[]) => Promise<void>, minAgeSeconds = 30, limit = 100) {
+    public async publishOutstanding(publisher: (events: QualifiedDomainEvent[]) => Promise<void>, minAgeSeconds = 30, limit = 100) {
         return this.transaction('READ COMMITTED', async (client) => {
-            const outboxItems = await this.doFindUnpublished(client, minAgeSeconds, limit);
+            const outboxItems = await this.doFindOutstanding(client, minAgeSeconds, limit);
             for (let location of outboxItems) {
                 await this.doPublish(client, location, publisher);
             }

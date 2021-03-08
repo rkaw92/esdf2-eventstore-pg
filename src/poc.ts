@@ -38,8 +38,8 @@ const publisher = async function(events: QualifiedDomainEvent[]) {
         }]
     };
     await store.save(commit);
-    await store.publishUpTo(commit.location, publisher);
-    await store.publishUnpublished(publisher);
+    await store.publishSequence(commit.location, publisher);
+    await store.publishOutstanding(publisher);
     // Teardown:
     await pool.end();
 })();
