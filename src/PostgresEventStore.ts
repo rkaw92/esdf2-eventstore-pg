@@ -1,8 +1,9 @@
-import { Commit, CommitLocation, EventLocation, QualifiedDomainEvent } from "esdf2-interfaces";
+import { AggregateCommitLocation, Commit, CommitLocation, EventLocation, QualifiedDomainEvent } from "esdf2-interfaces";
 import { Connection, Pool, PoolClient } from "pg";
 
 export type IsolationLevel = "READ COMMITTED" | "REPEATABLE READ" | "SERIALIZABLE";
 interface EventRow {
+    aggregate_name: string;
     type: string;
     payload: object;
     id: string;
@@ -12,6 +13,7 @@ interface EventRow {
     committed_at: Date;
 };
 interface OutboxRow {
+    aggregate_name: string;
     sequence: string;
     slot: string;
     committed_at: Date;
@@ -21,6 +23,7 @@ function rowToEvent(row: EventRow): QualifiedDomainEvent {
     return {
         id: row.id,
         location: {
+            aggregateName: row.aggregate_name,
             sequence: row.sequence,
             index: Number(row.index)
         },
@@ -28,8 +31,9 @@ function rowToEvent(row: EventRow): QualifiedDomainEvent {
         payload: row.payload
     };
 }
-function outboxRowToLocation(row: OutboxRow): CommitLocation {
+function outboxRowToLocation(row: OutboxRow): AggregateCommitLocation {
     return {
+        aggregateName: row.aggregate_name,
         sequence: row.sequence,
         slot: Number(row.slot)
     };
@@ -65,7 +69,8 @@ export class PostgresEventStore {
         await this.transaction('READ COMMITTED', async function(client) {
             // TODO: Optimize this - generate bulk-insert DMLs instead of individual INSERTs.
             for (let event of commit.events) {
-                await client.query('INSERT INTO eventstore.events (type, payload, id, sequence, slot, index, committed_at) VALUES ($1, $2, $3, $4, $5, $6, $7)', [
+                await client.query('INSERT INTO eventstore.events (aggregate_name, type, payload, id, sequence, slot, index, committed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)', [
+                    event.location.aggregateName,
                     event.type,
                     event.payload,
                     event.id,
@@ -75,14 +80,15 @@ export class PostgresEventStore {
                     commitTimestamp
                 ]);
             }
-            await client.query('INSERT INTO eventstore.outbox (sequence, slot) VALUES ($1, $2)', [
+            await client.query('INSERT INTO eventstore.outbox (aggregate_name, sequence, slot) VALUES ($1, $2, $3)', [
+                commit.location.aggregateName,
                 commit.location.sequence,
                 commit.location.slot
             ]);
         });
     }
 
-    async load(since: CommitLocation, processorFunction: (event: QualifiedDomainEvent) => void): Promise<{ lastCommit?: CommitLocation, lastEvent?: EventLocation }> {
+    async load(since: AggregateCommitLocation, processorFunction: (event: QualifiedDomainEvent) => void): Promise<{ lastCommit?: CommitLocation, lastEvent?: EventLocation }> {
         const loadBatchSize = this.loadBatchSize;
         return await this.transaction('READ COMMITTED', async function(client) {
             let slot: number = since.slot;
@@ -90,7 +96,8 @@ export class PostgresEventStore {
             let lastEvent: EventLocation | undefined;
             let processedEventCount: number;
             do {
-                const eventRows = (await client.query<EventRow>('SELECT type, payload, id, sequence, slot, index FROM eventstore.events WHERE "sequence" = $1 AND "slot" > $2 ORDER BY index LIMIT $3', [
+                const eventRows = (await client.query<EventRow>('SELECT aggregate_name, type, payload, id, sequence, slot, index FROM eventstore.events WHERE "aggregate_name" = $1 AND "sequence" = $2 AND "slot" > $3 ORDER BY index LIMIT $4', [
+                    since.aggregateName,
                     since.sequence,
                     slot,
                     loadBatchSize
@@ -113,9 +120,10 @@ export class PostgresEventStore {
             };
         });
     }
-    private async doPublish(client: PoolClient, location: CommitLocation, publisher: (events: QualifiedDomainEvent[]) => Promise<void>): Promise<void> {
+    private async doPublish(client: PoolClient, location: AggregateCommitLocation, publisher: (events: QualifiedDomainEvent[]) => Promise<void>): Promise<void> {
         // TODO: Benchmark this FOR UPDATE lock; consider using advisory locks for performance if needed.
-        const pendingSlots = (await client.query<{ sequence: string, slot: string }>('SELECT sequence, slot FROM eventstore.outbox WHERE sequence = $1 AND slot <= $2 ORDER BY slot FOR UPDATE', [
+        const pendingSlots = (await client.query<{ sequence: string, slot: string }>('SELECT aggregate_name, sequence, slot FROM eventstore.outbox WHERE aggregate_name = $1 AND sequence = $2 AND slot <= $3 ORDER BY slot FOR UPDATE', [
+            location.aggregateName,
             location.sequence,
             location.slot
         ])).rows;
@@ -126,28 +134,30 @@ export class PostgresEventStore {
         const last = pendingSlots[pendingSlots.length - 1];
         // Assume no holes (in the worst case, we'll end up re-publishing something):
         // TODO: LIMIT to guard against really big commits?
-        const pendingEvents = (await client.query('SELECT type, payload, id, sequence, slot, index FROM eventstore.events WHERE sequence = $1 AND slot >= $2 AND slot <= $3 ORDER BY index', [
+        const pendingEvents = (await client.query('SELECT aggregate_name, type, payload, id, sequence, slot, index FROM eventstore.events WHERE aggregate_name = $1 AND sequence = $2 AND slot >= $3 AND slot <= $4 ORDER BY index', [
+            location.aggregateName,
             location.sequence,
             first.slot,
             last.slot
         ])).rows;
         await publisher(pendingEvents.map(rowToEvent));
-        await client.query('DELETE FROM eventstore.outbox WHERE sequence = $1 AND slot >= $2 AND slot <= $3', [
+        await client.query('DELETE FROM eventstore.outbox WHERE aggregate_name = $1 AND sequence = $2 AND slot >= $3 AND slot <= $4', [
+            location.aggregateName,
             location.sequence,
             first.slot,
             last.slot
         ]);
     }
-    private async doFindOutstanding(client: PoolClient, minAgeSeconds: number, limit: number): Promise<CommitLocation[]> {
+    private async doFindOutstanding(client: PoolClient, minAgeSeconds: number, limit: number): Promise<AggregateCommitLocation[]> {
         const intervalString = `${minAgeSeconds} SECOND`;
-        const outboxRows = (await client.query<OutboxRow>('SELECT sequence, slot FROM eventstore.outbox WHERE committed_at < (NOW() - $1::interval) LIMIT $2 FOR SHARE SKIP LOCKED', [
+        const outboxRows = (await client.query<OutboxRow>('SELECT aggregate_name, sequence, slot FROM eventstore.outbox WHERE committed_at < (NOW() - $1::interval) LIMIT $2 FOR SHARE SKIP LOCKED', [
             intervalString,
             limit
         ])).rows;
         return outboxRows.map(outboxRowToLocation);
     }
 
-    public async publishSequence(location: CommitLocation, publisher: (events: QualifiedDomainEvent[]) => Promise<void>) {
+    public async publishSequence(location: AggregateCommitLocation, publisher: (events: QualifiedDomainEvent[]) => Promise<void>) {
         return this.transaction('READ COMMITTED', (client) => this.doPublish(client, location, publisher));
     }
 

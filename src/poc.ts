@@ -21,13 +21,15 @@ const publisher = async function(events: QualifiedDomainEvent[]) {
     const commit = {
         location: {
             sequence: sequence,
-            slot: 1
+            slot: 1,
+            aggregateName: 'Customer'
         },
         events: [{
             id: uuid.v4(),
             location: {
                 sequence: sequence,
-                index: 1
+                index: 1,
+                aggregateName: 'Customer'
             },
             type: 'Registered',
             payload: {
@@ -41,7 +43,7 @@ const publisher = async function(events: QualifiedDomainEvent[]) {
     await store.publishSequence(commit.location, publisher);
     await store.publishOutstanding(publisher);
 
-    await store.load({ sequence: commit.location.sequence, slot: 0 }, function(event) {
+    await store.load({ aggregateName: 'Product', sequence: commit.location.sequence, slot: 0 }, function(event) {
         console.log('loaded:', event);
     });
 

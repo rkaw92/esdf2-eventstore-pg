@@ -1,14 +1,14 @@
 BEGIN;
 
 CREATE TABLE eventstore.events (
-    -- TODO: include an aggregate_type field to avoid event reinterpretation attacks!
+    "aggregate_name" TEXT NOT NULL,
     "type" TEXT NOT NULL,
     "payload" JSONB NOT NULL,
     "id" TEXT NOT NULL,
     "sequence" TEXT NOT NULL,
     "slot" BIGINT NOT NULL,
     "index" BIGINT NOT NULL,
-    "committed_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    "committed_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     PRIMARY KEY("sequence", "index")
 ) PARTITION BY HASH ("sequence");
 
@@ -38,6 +38,7 @@ CREATE TABLE eventstore.events_7
     FOR VALUES WITH (MODULUS 8, REMAINDER 7);
 
 CREATE TABLE eventstore.outbox (
+    aggregate_name TEXT NOT NULL,
     sequence TEXT NOT NULL,
     slot BIGINT NOT NULL,
     committed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
@@ -47,4 +48,4 @@ CREATE TABLE eventstore.outbox (
 COMMIT;
 
 -- TODO: benchmark with realistic data - 1 billion rows?
--- INSERT INTO eventstore.events (type, payload, sequence, slot, index, id) SELECT 'Defined', '{"EAN":"1231231231231"}', uuid_generate_v4(), 1, 1, uuid_generate_v4() FROM generate_series(1, 10000000) s(i);
+-- INSERT INTO eventstore.events (aggregate_name, type, payload, sequence, slot, index, id) SELECT 'Product', 'Defined', '{"EAN":"1231231231231"}', uuid_generate_v4(), 1, 1, uuid_generate_v4() FROM generate_series(1, 10000000) s(i);
